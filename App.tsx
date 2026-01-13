@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Employee, KPIType, CalculationResult, EmployeePerformance, EmployeeRole, MonthlyHistory } from './types';
 import EmployeeCard from './components/EmployeeCard';
@@ -26,7 +27,7 @@ const App: React.FC = () => {
   const [showRHModal, setShowRHModal] = useState(false);
   const [newEmployee, setNewEmployee] = useState({ name: '', baseSalary: '', role: EmployeeRole.EQUIPE });
   const [currentSelectedResults, setCurrentSelectedResults] = useState<CalculationResult[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const csvInputRef = useRef<HTMLInputElement>(null);
 
   const currentMonthPerformance = useMemo(() => history[currentMonth] || {}, [history, currentMonth]);
 
@@ -69,6 +70,61 @@ const App: React.FC = () => {
     }));
   };
 
+  const handleCSVImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      const lines = text.split(/\r?\n/);
+      
+      const newEmployeesList = [...employees];
+      const newHistory = { ...history };
+      const monthData = newHistory[currentMonth] || {};
+
+      // Pular cabeçalho (Linha 1)
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        // Suporta vírgula ou ponto-e-vírgula
+        const parts = line.includes(';') ? line.split(';') : line.split(',');
+        if (parts.length < 3) continue;
+
+        const [name, roleStr, salaryStr, bsc, gerencial, mat, special] = parts.map(p => p.trim());
+        const nameUpper = name.toUpperCase();
+        const baseSalary = parseFloat(salaryStr.replace('R$', '').replace('.', '').replace(',', '.')) || 0;
+        const role = roleStr.toUpperCase().includes('GERENTE') ? EmployeeRole.GERENTE : EmployeeRole.EQUIPE;
+
+        // 1. Verificar se colaborador já existe
+        let emp = newEmployeesList.find(e => e.name === nameUpper);
+        if (!emp) {
+          emp = { id: Date.now().toString() + i, name: nameUpper, baseSalary, role };
+          newEmployeesList.push(emp);
+        } else {
+          // Atualiza salário se já existir
+          emp.baseSalary = baseSalary;
+          emp.role = role;
+        }
+
+        // 2. Lançar performances
+        monthData[emp.id] = {
+          [KPIType.MONTHLY_BSC]: parseFloat(bsc) || 0,
+          [KPIType.QUARTERLY_GERENCIAL]: parseFloat(gerencial) || 0,
+          [KPIType.MONTHLY_MAT]: parseFloat(mat) || 0,
+          [KPIType.QUARTERLY_SPECIAL]: parseFloat(special) || 0,
+        };
+      }
+
+      setEmployees(newEmployeesList);
+      setHistory({ ...newHistory, [currentMonth]: monthData });
+      alert("Importação concluída! Dados carregados com sucesso.");
+      if (csvInputRef.current) csvInputRef.current.value = '';
+    };
+    reader.readAsText(file, 'ISO-8859-1'); // Encoding comum para CSVs do Excel Brasil
+  };
+
   const handleAddEmployee = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newEmployee.name || !newEmployee.baseSalary) return;
@@ -93,18 +149,18 @@ const App: React.FC = () => {
 
   const exportToCSV = () => {
     const monthLabel = new Date(currentMonth + "-01").toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
-    let csv = `\uFEFFRELATORIO DE PREMIACAO - ${monthLabel.toUpperCase()}\n`;
-    csv += "Colaborador;Perfil;Salario Base;" + Object.values(KPIType).map(t => KPI_LABELS[t]).join(";") + ";Total Premiacao\n";
+    let csv = `\uFEFFNome;Perfil;Salario;Vendas BSC;Orcamento Gerencial;Gerencial MAT;Especial;Total Premiacao\n`;
     
     employees.forEach(emp => {
       const perf = currentMonthPerformance[emp.id] || {};
       let line = `${emp.name};${emp.role};${emp.baseSalary.toFixed(2)}`;
       let total = 0;
       Object.values(KPIType).forEach(type => {
-        const bonusPct = getBonusPercentage(type, perf[type] || 0, emp.role);
+        const valRaw = perf[type] || 0;
+        const bonusPct = getBonusPercentage(type, valRaw, emp.role);
         const bonusVal = (emp.baseSalary * bonusPct) / 100;
         total += bonusVal;
-        line += `;${bonusVal.toFixed(2)}`;
+        line += `;${valRaw}`;
       });
       line += `;${total.toFixed(2)}\n`;
       csv += line;
@@ -189,7 +245,7 @@ const App: React.FC = () => {
       <header className="bg-white border-b border-gray-200 sticky top-0 z-50 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 h-20 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className="bg-blue-600 p-2.5 rounded-xl text-white shadow-blue-200 shadow-lg cursor-pointer" onClick={exportBackup} title="Clique para baixar backup geral">
+            <div className="bg-blue-600 p-2.5 rounded-xl text-white shadow-blue-200 shadow-lg cursor-pointer transition-transform hover:scale-110 active:scale-95" onClick={exportBackup} title="Clique para baixar backup geral">
               <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
               </svg>
@@ -214,9 +270,10 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex gap-2">
-            <label className="cursor-pointer px-4 py-2.5 bg-gray-50 text-gray-400 hover:text-gray-600 rounded-xl text-sm font-bold transition-all border border-transparent hover:border-gray-200" title="Importar Backup JSON">
-              <input type="file" className="hidden" accept=".json" onChange={importBackup} />
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1M16 8l-4-4m0 0L8 8m4-4v12" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            <label className="cursor-pointer px-4 py-2.5 bg-gray-50 text-gray-400 hover:text-blue-600 rounded-xl text-sm font-bold transition-all border border-transparent hover:border-blue-200 flex items-center gap-2" title="Subir Planilha CSV (Nome;Perfil;Salario;BSC;Gerencial;MAT;Especial)">
+              <input ref={csvInputRef} type="file" className="hidden" accept=".csv" onChange={handleCSVImport} />
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              Importar CSV
             </label>
             <button onClick={() => setShowRHModal(true)} className="px-5 py-2.5 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 rounded-xl text-sm font-bold transition-all flex items-center gap-2 shadow-sm">
               <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -246,7 +303,7 @@ const App: React.FC = () => {
               ))}
               {employees.length === 0 && (
                 <div className="bg-white p-8 rounded-2xl border-2 border-dashed border-gray-100 text-center text-gray-300 text-sm italic">
-                  Clique em "Novo Perfil" para começar.
+                  Use o botão "Importar CSV" ou "Novo Perfil".
                 </div>
               )}
             </div>
@@ -289,9 +346,30 @@ const App: React.FC = () => {
               />
             </div>
           ) : (
-            <div className="h-[500px] flex flex-col items-center justify-center border-4 border-dashed border-gray-100 rounded-[48px] text-gray-300">
-              <svg className="w-20 h-20 mb-6 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-              <p className="font-black text-xl tracking-tight">Selecione alguém na lista</p>
+            <div className="h-[600px] flex flex-col items-center justify-center border-4 border-dashed border-gray-100 rounded-[48px] bg-white/50 p-12 text-center">
+              <div className="w-24 h-24 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mb-8 animate-bounce">
+                <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </div>
+              <h2 className="text-2xl font-black text-gray-900 mb-4 tracking-tight uppercase">Carga em Lote Disponível!</h2>
+              <p className="text-gray-500 max-w-md mx-auto font-medium mb-10">Você pode subir sua planilha do Excel de uma vez só:</p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-left w-full">
+                <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
+                  <div className="w-8 h-8 bg-blue-600 text-white rounded-lg flex items-center justify-center font-black mb-4">A</div>
+                  <p className="font-black text-xs text-gray-900 uppercase mb-1">Planilha Excel</p>
+                  <p className="text-xs text-gray-400 font-medium">Crie as colunas: Nome, Perfil, Salário, BSC, Gerencial, MAT e Especial.</p>
+                </div>
+                <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
+                  <div className="w-8 h-8 bg-blue-600 text-white rounded-lg flex items-center justify-center font-black mb-4">B</div>
+                  <p className="font-black text-xs text-gray-900 uppercase mb-1">Salvar como CSV</p>
+                  <p className="text-xs text-gray-400 font-medium">No Excel, use "Salvar Como" e escolha o formato CSV (separado por vírgula).</p>
+                </div>
+                <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
+                  <div className="w-8 h-8 bg-blue-600 text-white rounded-lg flex items-center justify-center font-black mb-4">C</div>
+                  <p className="font-black text-xs text-gray-900 uppercase mb-1">Importar</p>
+                  <p className="text-xs text-gray-400 font-medium">Clique em "Importar CSV" no topo e pronto! Tudo preenchido.</p>
+                </div>
+              </div>
             </div>
           )}
         </section>
@@ -313,7 +391,7 @@ const App: React.FC = () => {
                 <button onClick={exportToCSV} className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-4 rounded-2xl text-sm font-black shadow-lg shadow-emerald-100 transition-all flex items-center gap-2">
                    Baixar CSV
                 </button>
-                <button onClick={() => setShowRHModal(false)} className="bg-white text-gray-400 p-4 rounded-2xl border border-gray-200">
+                <button onClick={() => setShowRHModal(false)} className="bg-white text-gray-400 p-4 rounded-2xl border border-gray-200 transition-transform hover:scale-105">
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
               </div>
@@ -362,7 +440,7 @@ const App: React.FC = () => {
                   })}
                 </tbody>
               </table>
-              {employees.length === 0 && <div className="py-20 text-center text-gray-300 font-black uppercase">Sem dados.</div>}
+              {employees.length === 0 && <div className="py-20 text-center text-gray-300 font-black uppercase">Sem dados para este mês.</div>}
             </div>
           </div>
         </div>
