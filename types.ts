@@ -1,9 +1,9 @@
 
 export enum KPIType {
   MONTHLY_BSC = 'MONTHLY_BSC',
-  QUARTERLY_GERENCIAL = 'QUARTERLY_GERENCIAL',
   MONTHLY_MAT = 'MONTHLY_MAT',
-  QUARTERLY_SPECIAL = 'QUARTERLY_SPECIAL'
+  QUARTERLY_GERENCIAL = 'QUARTERLY_GERENCIAL',
+  ANNUAL_EBITDA = 'ANNUAL_EBITDA'
 }
 
 export enum EmployeeRole {
@@ -22,7 +22,6 @@ export interface EmployeePerformance {
   [kpi: string]: number;
 }
 
-// Estrutura: { "2024-03": { "empId1": { MONTHLY_BSC: 100, ... } } }
 export interface MonthlyHistory {
   [monthYear: string]: {
     [empId: string]: EmployeePerformance;
