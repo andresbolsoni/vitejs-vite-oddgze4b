@@ -22,6 +22,11 @@ const App: React.FC = () => {
     return saved ? JSON.parse(saved) : {};
   });
 
+  const [showSalaries, setShowSalaries] = useState(() => {
+    const saved = localStorage.getItem('kpi_show_salaries');
+    return saved !== null ? JSON.parse(saved) : true;
+  });
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showRHModal, setShowRHModal] = useState(false);
@@ -41,6 +46,10 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('kpi_history_v2', JSON.stringify(history));
   }, [history]);
+
+  useEffect(() => {
+    localStorage.setItem('kpi_show_salaries', JSON.stringify(showSalaries));
+  }, [showSalaries]);
 
   const selectedEmployee = useMemo(() => {
     return employees.find(e => e.id === selectedId);
@@ -206,6 +215,30 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Botão de Privacidade */}
+            <button 
+              onClick={() => setShowSalaries(!showSalaries)}
+              className={`p-2.5 rounded-xl transition-all flex items-center gap-2 border ${
+                showSalaries 
+                ? 'bg-gray-50 border-gray-100 text-gray-400 hover:bg-gray-100' 
+                : 'bg-blue-50 border-blue-100 text-blue-600'
+              }`}
+              title={showSalaries ? "Ocultar Salários" : "Exibir Salários"}
+            >
+              {showSalaries ? (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18" />
+                </svg>
+              )}
+            </button>
+
+            <div className="h-8 w-px bg-gray-100 mx-1"></div>
+
             <div className="flex flex-col">
               <label className="text-[9px] font-black text-blue-600 uppercase mb-0.5">Mês Referência</label>
               <select value={currentMonth} onChange={(e) => setCurrentMonth(e.target.value)} className="bg-blue-50 text-blue-700 font-bold py-1 px-3 rounded-lg border-none outline-none text-xs cursor-pointer">
@@ -214,13 +247,13 @@ const App: React.FC = () => {
                 ))}
               </select>
             </div>
-            <div className="h-8 w-px bg-gray-100 mx-1"></div>
+            
             <label className="cursor-pointer px-4 py-2.5 bg-emerald-600 text-white hover:bg-emerald-700 rounded-xl text-sm font-black transition-all flex items-center gap-2 shadow-lg shadow-emerald-50">
               <input ref={csvInputRef} type="file" className="hidden" accept=".csv" onChange={handleCSVImport} />
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1M16 8l-4-4m0 0L8 8m4-4v12" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              Importar CSV
+              Importar
             </label>
             <button onClick={() => setShowRHModal(true)} className="px-4 py-2.5 bg-gray-100 text-gray-600 hover:bg-gray-200 rounded-xl text-sm font-black transition-all">RH</button>
             <button onClick={() => setShowAddModal(true)} className="px-4 py-2.5 bg-blue-600 text-white hover:bg-blue-700 rounded-xl text-sm font-black shadow-lg shadow-blue-50">Novo +</button>
@@ -233,9 +266,16 @@ const App: React.FC = () => {
           <h2 className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Equipe</h2>
           <div className="max-h-[calc(100vh-180px)] overflow-y-auto pr-2 custom-scrollbar space-y-3">
             {employees.map(emp => (
-              <EmployeeCard key={emp.id} employee={emp} isSelected={selectedId === emp.id} onSelect={(e) => setSelectedId(e.id)} onDelete={(id) => {
-                if(confirm("Remover colaborador?")) setEmployees(prev => prev.filter(e => e.id !== id));
-              }} />
+              <EmployeeCard 
+                key={emp.id} 
+                employee={emp} 
+                isSelected={selectedId === emp.id} 
+                showSalary={showSalaries}
+                onSelect={(e) => setSelectedId(e.id)} 
+                onDelete={(id) => {
+                  if(confirm("Remover colaborador?")) setEmployees(prev => prev.filter(e => e.id !== id));
+                }} 
+              />
             ))}
           </div>
         </aside>
@@ -249,7 +289,11 @@ const App: React.FC = () => {
                     <h2 className="text-3xl font-black text-gray-900 uppercase tracking-tight">{selectedEmployee.name}</h2>
                     <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-[10px] font-black uppercase">{selectedEmployee.role}</span>
                   </div>
-                  <p className="text-gray-500 font-medium">Salário Base: <span className="text-gray-900 font-bold">{formatCurrency(selectedEmployee.baseSalary)}</span></p>
+                  <p className="text-gray-500 font-medium">
+                    Salário Base: <span className="text-gray-900 font-bold">
+                      {showSalaries ? formatCurrency(selectedEmployee.baseSalary) : '••••••'}
+                    </span>
+                  </p>
                 </div>
                 <div className="bg-blue-600 p-6 rounded-2xl text-white shadow-2xl shadow-blue-100 min-w-[280px] text-center">
                   <p className="text-[10px] font-black uppercase tracking-widest opacity-70 mb-1">Premiação Total Acumulada</p>
@@ -297,7 +341,6 @@ const App: React.FC = () => {
                     <th className="p-6 bg-gray-50">Colaborador</th>
                     <th className="p-6 text-right">Salário Base</th>
                     
-                    {/* Headers Dinâmicos para KPIs */}
                     {Object.values(KPIType).map(type => (
                       <th key={type} className="p-6 text-center border-l border-gray-100 bg-white/50">
                         <div className="whitespace-nowrap">{KPI_LABELS[type].replace('Prêmio ', '')}</div>
@@ -323,7 +366,9 @@ const App: React.FC = () => {
                            <div className="font-black text-gray-900 uppercase leading-none">{emp.name}</div>
                            <div className="text-[9px] font-bold text-gray-400 mt-1 uppercase">{emp.role}</div>
                         </td>
-                        <td className="p-6 text-right font-bold text-gray-500">{formatCurrency(emp.baseSalary)}</td>
+                        <td className="p-6 text-right font-bold text-gray-500">
+                          {showSalaries ? formatCurrency(emp.baseSalary) : '••••••'}
+                        </td>
                         
                         {Object.values(KPIType).map(type => {
                           const achievement = perf[type] || 0;
@@ -349,7 +394,7 @@ const App: React.FC = () => {
                           {formatCurrency(totalPrize)}
                         </td>
                         <td className="p-6 text-right font-black text-gray-900 bg-gray-50/50">
-                          {formatCurrency(emp.baseSalary + totalPrize)}
+                          {showSalaries ? formatCurrency(emp.baseSalary + totalPrize) : '••••••'}
                         </td>
                       </tr>
                     );
