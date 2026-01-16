@@ -69,6 +69,30 @@ const App: React.FC = () => {
     localStorage.setItem(DB_KEY, JSON.stringify(stateToSave));
   }, [employees, history, showSalaries, currentMonth, isLoaded]);
 
+  // --- FUNÇÃO AUXILIAR: GARANTIR CARREGAMENTO DA LIB EXCEL ---
+  const ensureXlsxLoaded = (): Promise<any> => {
+    return new Promise((resolve, reject) => {
+      if ((window as any).XLSX) {
+        resolve((window as any).XLSX);
+        return;
+      }
+
+      console.log("SheetJS não detectado. Iniciando carregamento dinâmico...");
+      const script = document.createElement('script');
+      script.src = "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
+      script.async = true;
+      script.onload = () => {
+        if ((window as any).XLSX) {
+          resolve((window as any).XLSX);
+        } else {
+          reject(new Error("Falha ao inicializar objeto XLSX após download."));
+        }
+      };
+      script.onerror = () => reject(new Error("Falha ao baixar a biblioteca de Excel do CDN."));
+      document.head.appendChild(script);
+    });
+  };
+
   // --- FUNÇÕES DE BACKUP ---
   const handleExportBackup = () => {
     const stateToSave = { employees, history, showSalaries, timestamp: new Date().toISOString() };
@@ -183,96 +207,96 @@ const App: React.FC = () => {
     reader.readAsText(file, 'ISO-8859-1');
   };
 
-  // --- IMPORTAÇÃO DE EXCEL (FIX: GLOBAL SCOPE & ROBUSTNESS) ---
-  const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // --- IMPORTAÇÃO DE EXCEL (FIX: DYNAMIC LOADING & ASYNC) ---
+  const handleExcelImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Safety Check: Verifica se a biblioteca foi carregada via CDN no objeto global window
-    const xlsxLib = (window as any).XLSX;
-    if (!xlsxLib) {
-      alert("ERRO DE SISTEMA: A biblioteca de Excel (XLSX) não foi carregada corretamente.\nPor favor, verifique sua conexão ou recarregue a página.");
-      return;
+    try {
+      // 1. Garante que a lib está carregada antes de qualquer processamento
+      const xlsxLib = await ensureXlsxLoaded();
+
+      const reader = new FileReader();
+      
+      reader.onload = (event) => {
+        try {
+          const arrayBuffer = event.target?.result;
+          if (!arrayBuffer) throw new Error("Não foi possível ler o buffer do arquivo.");
+
+          // Uso de Uint8Array para arquivos binários (.xlsx)
+          const data = new Uint8Array(arrayBuffer as ArrayBuffer);
+          
+          // Acesso via variável retornada pela Promise de carregamento
+          const workbook = xlsxLib.read(data, { type: 'array' });
+          
+          if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+            throw new Error("O arquivo Excel parece estar vazio ou inválido.");
+          }
+
+          const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+          const rows: any[][] = xlsxLib.utils.sheet_to_json(worksheet, { header: 1 });
+
+          if (!rows || rows.length < 2) {
+            throw new Error("Planilha sem dados ou cabeçalhos ausentes.");
+          }
+
+          // Normalização de Headers
+          const rawHeaders = rows[0].map(h => String(h || "").trim().toUpperCase());
+
+          const findHeaderIdx = (aliases: string[]) => rawHeaders.findIndex(h => aliases.includes(h));
+
+          const idxNome = findHeaderIdx(['NOME_COLABORADOR', 'NOME', 'COLABORADOR', 'NOME_COLAB', 'EMPLOYEE', 'FUNCIONARIO']);
+          const idxKpi = findHeaderIdx(['KPI_CODIGO', 'KPI', 'INDICADOR', 'CODIGO_KPI', 'CODIGO', 'KPI_CODE']);
+          const idxValor = findHeaderIdx(['VALOR_REALIZADO', 'VALOR', 'REALIZADO', 'ATINGIMENTO', 'RESULTADO']);
+
+          if (idxNome === -1 || idxKpi === -1 || idxValor === -1) {
+            const expected = ["NOME_COLABORADOR", "KPI_CODIGO", "VALOR_REALIZADO"];
+            const found = rawHeaders.filter(h => h).join(", ");
+            alert(`ERRO DE MAPEAMENTO\n\nEsperado: [${expected.join(", ")}]\nEncontrado: [${found || "Nenhuma coluna identificada"}]\n\nVerifique os títulos na primeira linha da planilha.`);
+            return;
+          }
+
+          const newHistory = { ...history };
+          const monthData = { ...(newHistory[currentMonth] || {}) };
+          let count = 0;
+
+          rows.slice(1).forEach((row) => {
+            if (!row || row.length === 0) return;
+
+            const nomeExcel = String(row[idxNome] || '').toUpperCase().trim();
+            const codigoKpi = String(row[idxKpi] || '').toUpperCase().trim();
+            const valorRealizado = parseNum(row[idxValor]);
+
+            if (!nomeExcel || !codigoKpi) return;
+
+            const emp = employees.find(e => e.name === nomeExcel);
+            if (!emp) return;
+
+            const kpiType = KPI_CODE_MAP[codigoKpi];
+            if (!kpiType) return;
+
+            if (!monthData[emp.id]) monthData[emp.id] = {};
+            monthData[emp.id][kpiType] = valorRealizado;
+            count++;
+          });
+
+          setHistory({ ...newHistory, [currentMonth]: monthData });
+          alert(`✅ Importação realizada com sucesso!\n\nRegistros processados: ${count}\nMês de Referência: ${currentMonth}`);
+          
+          if (excelInputRef.current) excelInputRef.current.value = "";
+          
+        } catch (err: any) {
+          console.error("Erro interno no processamento do Excel:", err);
+          alert(`FALHA NA LEITURA\n\nMensagem Técnica: ${err.message}`);
+        }
+      };
+
+      reader.readAsArrayBuffer(file);
+
+    } catch (loadErr: any) {
+      console.error("Erro ao carregar SheetJS:", loadErr);
+      alert(`FALHA NO SISTEMA\n\nNão foi possível carregar a ferramenta de processamento de Excel. Verifique sua conexão.\nErro: ${loadErr.message}`);
     }
-
-    const reader = new FileReader();
-    
-    reader.onload = (event) => {
-      try {
-        const arrayBuffer = event.target?.result;
-        if (!arrayBuffer) throw new Error("Não foi possível ler o buffer do arquivo.");
-
-        // Uso obrigatório de Uint8Array para arquivos binários (.xlsx)
-        const data = new Uint8Array(arrayBuffer as ArrayBuffer);
-        
-        // Acesso via variável local que aponta para o objeto global mapeado anteriormente
-        const workbook = xlsxLib.read(data, { type: 'array' });
-        
-        if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
-          throw new Error("O arquivo Excel parece estar vazio ou inválido.");
-        }
-
-        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rows: any[][] = xlsxLib.utils.sheet_to_json(worksheet, { header: 1 });
-
-        if (!rows || rows.length < 2) {
-          throw new Error("Planilha sem dados ou cabeçalhos ausentes.");
-        }
-
-        // Normalização de Headers: Trim e UpperCase para evitar Case Sensitivity
-        const rawHeaders = rows[0].map(h => String(h || "").trim().toUpperCase());
-
-        const findHeaderIdx = (aliases: string[]) => rawHeaders.findIndex(h => aliases.includes(h));
-
-        const idxNome = findHeaderIdx(['NOME_COLABORADOR', 'NOME', 'COLABORADOR', 'NOME_COLAB', 'EMPLOYEE', 'FUNCIONARIO']);
-        const idxKpi = findHeaderIdx(['KPI_CODIGO', 'KPI', 'INDICADOR', 'CODIGO_KPI', 'CODIGO', 'KPI_CODE']);
-        const idxValor = findHeaderIdx(['VALOR_REALIZADO', 'VALOR', 'REALIZADO', 'ATINGIMENTO', 'RESULTADO']);
-
-        // Debug: Feedback detalhado caso as colunas não sejam encontradas
-        if (idxNome === -1 || idxKpi === -1 || idxValor === -1) {
-          const expected = ["NOME_COLABORADOR", "KPI_CODIGO", "VALOR_REALIZADO"];
-          const found = rawHeaders.filter(h => h).join(", ");
-          alert(`ERRO DE MAPEAMENTO\n\nEsperado: [${expected.join(", ")}]\nEncontrado: [${found || "Nenhuma coluna identificada"}]\n\nVerifique os títulos na primeira linha da planilha.`);
-          return;
-        }
-
-        const newHistory = { ...history };
-        const monthData = { ...(newHistory[currentMonth] || {}) };
-        let count = 0;
-
-        rows.slice(1).forEach((row) => {
-          if (!row || row.length === 0) return;
-
-          const nomeExcel = String(row[idxNome] || '').toUpperCase().trim();
-          const codigoKpi = String(row[idxKpi] || '').toUpperCase().trim();
-          const valorRealizado = parseNum(row[idxValor]);
-
-          if (!nomeExcel || !codigoKpi) return;
-
-          const emp = employees.find(e => e.name === nomeExcel);
-          if (!emp) return;
-
-          const kpiType = KPI_CODE_MAP[codigoKpi];
-          if (!kpiType) return;
-
-          if (!monthData[emp.id]) monthData[emp.id] = {};
-          monthData[emp.id][kpiType] = valorRealizado;
-          count++;
-        });
-
-        setHistory({ ...newHistory, [currentMonth]: monthData });
-        alert(`✅ Importação de Metas realizada!\nRegistros processados: ${count}\nMês: ${currentMonth}`);
-        
-        if (excelInputRef.current) excelInputRef.current.value = "";
-        
-      } catch (err: any) {
-        console.error("Erro na leitura do Excel:", err);
-        alert(`FALHA NA LEITURA\n\nMensagem Técnica: ${err.message}\n\nCertifique-se de que o arquivo é um .xlsx válido.`);
-      }
-    };
-
-    // CRÍTICO: Usar readAsArrayBuffer para evitar corrupção de caracteres especiais e dados binários
-    reader.readAsArrayBuffer(file);
   };
 
   const handleAddEmployee = (e: React.FormEvent) => {
