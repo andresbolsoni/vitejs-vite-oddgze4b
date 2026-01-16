@@ -51,7 +51,7 @@ const App: React.FC = () => {
         if (parsed.currentMonth) setCurrentMonth(parsed.currentMonth);
         if (parsed.employees?.length > 0) setSelectedId(parsed.employees[0].id);
       } catch (e) {
-        console.error("Erro ao carregar banco de dados local", e);
+        console.error("Erro ao carregar bando de dados local", e);
       }
     }
     setIsLoaded(true);
@@ -183,10 +183,17 @@ const App: React.FC = () => {
     reader.readAsText(file, 'ISO-8859-1');
   };
 
-  // --- IMPORTAÇÃO DE EXCEL (Refatorada para máxima robustez) ---
+  // --- IMPORTAÇÃO DE EXCEL (FIX: GLOBAL SCOPE & ROBUSTNESS) ---
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // Safety Check: Verifica se a biblioteca foi carregada via CDN no objeto global window
+    const xlsxLib = (window as any).XLSX;
+    if (!xlsxLib) {
+      alert("ERRO DE SISTEMA: A biblioteca de Excel (XLSX) não foi carregada corretamente.\nPor favor, verifique sua conexão ou recarregue a página.");
+      return;
+    }
 
     const reader = new FileReader();
     
@@ -195,40 +202,37 @@ const App: React.FC = () => {
         const arrayBuffer = event.target?.result;
         if (!arrayBuffer) throw new Error("Não foi possível ler o buffer do arquivo.");
 
-        // Importante: Usar Uint8Array para leitura binária segura de .xlsx
+        // Uso obrigatório de Uint8Array para arquivos binários (.xlsx)
         const data = new Uint8Array(arrayBuffer as ArrayBuffer);
-        const workbook = (window as any).XLSX.read(data, { type: 'array' });
+        
+        // Acesso via variável local que aponta para o objeto global mapeado anteriormente
+        const workbook = xlsxLib.read(data, { type: 'array' });
         
         if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
-          throw new Error("O arquivo Excel parece estar vazio ou não contém planilhas.");
+          throw new Error("O arquivo Excel parece estar vazio ou inválido.");
         }
 
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        
-        // Lê como matriz de dados bruta (header: 1) para termos controle total
-        const rows: any[][] = (window as any).XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows: any[][] = xlsxLib.utils.sheet_to_json(worksheet, { header: 1 });
 
         if (!rows || rows.length < 2) {
-          throw new Error("Arquivo sem dados suficientes. Certifique-se de que a primeira linha contém os cabeçalhos.");
+          throw new Error("Planilha sem dados ou cabeçalhos ausentes.");
         }
 
-        // Normalização de headers: Tudo para MAIÚSCULO e sem espaços
+        // Normalização de Headers: Trim e UpperCase para evitar Case Sensitivity
         const rawHeaders = rows[0].map(h => String(h || "").trim().toUpperCase());
 
-        // Função auxiliar para busca flexível de colunas (Aliases)
         const findHeaderIdx = (aliases: string[]) => rawHeaders.findIndex(h => aliases.includes(h));
 
-        const idxNome = findHeaderIdx(['NOME_COLABORADOR', 'NOME', 'COLABORADOR', 'NOME_COLAB', 'EMPLOYEE', 'FUNCIONÁRIO', 'FUNCIONARIO']);
-        const idxKpi = findHeaderIdx(['KPI_CODIGO', 'KPI', 'INDICADOR', 'CODIGO_KPI', 'CODIGO', 'KPI_CODE', 'KEY_PERFORMANCE']);
-        const idxValor = findHeaderIdx(['VALOR_REALIZADO', 'VALOR', 'REALIZADO', 'ATINGIMENTO', 'VALOR_ATINGIDO', 'RESULTADO', 'PERCENTUAL']);
+        const idxNome = findHeaderIdx(['NOME_COLABORADOR', 'NOME', 'COLABORADOR', 'NOME_COLAB', 'EMPLOYEE', 'FUNCIONARIO']);
+        const idxKpi = findHeaderIdx(['KPI_CODIGO', 'KPI', 'INDICADOR', 'CODIGO_KPI', 'CODIGO', 'KPI_CODE']);
+        const idxValor = findHeaderIdx(['VALOR_REALIZADO', 'VALOR', 'REALIZADO', 'ATINGIMENTO', 'RESULTADO']);
 
-        // Validação de colunas com feedback de debug
+        // Debug: Feedback detalhado caso as colunas não sejam encontradas
         if (idxNome === -1 || idxKpi === -1 || idxValor === -1) {
           const expected = ["NOME_COLABORADOR", "KPI_CODIGO", "VALOR_REALIZADO"];
-          const found = rawHeaders.filter(h => h !== "").join(", ");
-          
-          alert(`ERRO DE COLUNAS DETECTADO\n\nEsperado: [${expected.join(", ")}]\n\nEncontrado no Arquivo: [${found || "Células vazias"}]\n\nPor favor, ajuste a primeira linha da sua planilha.`);
+          const found = rawHeaders.filter(h => h).join(", ");
+          alert(`ERRO DE MAPEAMENTO\n\nEsperado: [${expected.join(", ")}]\nEncontrado: [${found || "Nenhuma coluna identificada"}]\n\nVerifique os títulos na primeira linha da planilha.`);
           return;
         }
 
@@ -236,8 +240,7 @@ const App: React.FC = () => {
         const monthData = { ...(newHistory[currentMonth] || {}) };
         let count = 0;
 
-        // Itera sobre as linhas de dados (pulando o header)
-        rows.slice(1).forEach((row, rowIndex) => {
+        rows.slice(1).forEach((row) => {
           if (!row || row.length === 0) return;
 
           const nomeExcel = String(row[idxNome] || '').toUpperCase().trim();
@@ -247,10 +250,10 @@ const App: React.FC = () => {
           if (!nomeExcel || !codigoKpi) return;
 
           const emp = employees.find(e => e.name === nomeExcel);
-          if (!emp) return; // Ignora se o colaborador não estiver no cadastro
+          if (!emp) return;
 
           const kpiType = KPI_CODE_MAP[codigoKpi];
-          if (!kpiType) return; // Ignora se o código do KPI for inválido
+          if (!kpiType) return;
 
           if (!monthData[emp.id]) monthData[emp.id] = {};
           monthData[emp.id][kpiType] = valorRealizado;
@@ -258,22 +261,17 @@ const App: React.FC = () => {
         });
 
         setHistory({ ...newHistory, [currentMonth]: monthData });
-        
-        alert(`✅ Sucesso na Importação!\n\nAtualizados: ${count} registros.\nMês de Referência: ${monthOptions.find(o => o.val === currentMonth)?.label}.`);
+        alert(`✅ Importação de Metas realizada!\nRegistros processados: ${count}\nMês: ${currentMonth}`);
         
         if (excelInputRef.current) excelInputRef.current.value = "";
         
       } catch (err: any) {
-        console.error("Erro técnico na leitura do Excel:", err);
-        alert(`FALHA CRÍTICA NO EXCEL\n\nMotivo: ${err.message}\n\nTechnical Error: ${err.stack?.split('\n')[0] || "N/A"}\n\nVerifique se o arquivo não está aberto em outro programa.`);
+        console.error("Erro na leitura do Excel:", err);
+        alert(`FALHA NA LEITURA\n\nMensagem Técnica: ${err.message}\n\nCertifique-se de que o arquivo é um .xlsx válido.`);
       }
     };
 
-    reader.onerror = () => {
-      alert("Erro de leitura do navegador: Não foi possível acessar o arquivo físico.");
-    };
-
-    // CRÍTICO: Usar readAsArrayBuffer para .xlsx para evitar corrupção de dados binários
+    // CRÍTICO: Usar readAsArrayBuffer para evitar corrupção de caracteres especiais e dados binários
     reader.readAsArrayBuffer(file);
   };
 
