@@ -112,7 +112,8 @@ const App: React.FC = () => {
     return employees.find(e => e.id === selectedId);
   }, [employees, selectedId]);
 
-  const parseNum = (val: string): number => {
+  const parseNum = (val: string | number): number => {
+    if (typeof val === 'number') return val;
     if (!val || val === "0") return 0;
     let clean = val.replace(/[R$\s]/g, '').replace(/\./g, '').replace(',', '.');
     const result = parseFloat(clean);
@@ -143,22 +144,29 @@ const App: React.FC = () => {
       const lines = text.split(/\r?\n/).filter(line => line.trim() !== "");
       if (lines.length < 2) return;
       const delimiter = lines[0].includes(';') ? ';' : ',';
-      const headers = lines[0].split(delimiter).map(h => h.trim().toLowerCase());
+      const headers = lines[0].split(delimiter).map(h => h.trim().toUpperCase());
+      
       const idx = {
-        name: headers.findIndex(h => h.includes('nome')),
-        role: headers.findIndex(h => h.includes('perfil') || h.includes('cargo')),
-        salary: headers.findIndex(h => h.includes('salário') || h.includes('salario') || h.includes('base'))
+        name: headers.findIndex(h => ['NOME', 'NOME_COLABORADOR', 'COLABORADOR'].includes(h)),
+        role: headers.findIndex(h => ['PERFIL', 'CARGO', 'ROLE'].includes(h)),
+        salary: headers.findIndex(h => ['SALÁRIO', 'SALARIO', 'BASE', 'SALARIO_BASE'].includes(h))
       };
+
+      if (idx.name === -1 || idx.salary === -1) {
+        alert(`Erro de Colunas CSV.\nEsperado: [NOME, SALARIO]\nEncontrado: [${headers.join(", ")}]`);
+        return;
+      }
 
       const newEmployeesList = [...employees];
       for (let i = 1; i < lines.length; i++) {
         const parts = lines[i].split(delimiter).map(p => p.trim());
         if (parts.length < 2) continue;
-        const name = idx.name !== -1 ? parts[idx.name].toUpperCase() : "";
+        const name = parts[idx.name].toUpperCase();
         if (!name) continue;
         const roleStr = idx.role !== -1 ? parts[idx.role].toUpperCase() : "EQUIPE";
         const role = roleStr.includes("GERENTE") ? EmployeeRole.GERENTE : EmployeeRole.EQUIPE;
-        const baseSalary = idx.salary !== -1 ? parseNum(parts[idx.salary]) : 0;
+        const baseSalary = parseNum(parts[idx.salary]);
+        
         let emp = newEmployeesList.find(e => e.name === name);
         if (!emp) {
           emp = { id: (Date.now() + i).toString(), name, baseSalary, role };
@@ -175,6 +183,7 @@ const App: React.FC = () => {
     reader.readAsText(file, 'ISO-8859-1');
   };
 
+  // --- IMPORTAÇÃO ROBUSTA DE EXCEL ---
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -185,31 +194,63 @@ const App: React.FC = () => {
         const data = new Uint8Array(event.target?.result as ArrayBuffer);
         const workbook = (window as any).XLSX.read(data, { type: 'array' });
         const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rows = (window as any).XLSX.utils.sheet_to_json(worksheet);
+        
+        // Lê como array de arrays para controle total dos headers
+        const rows: any[][] = (window as any).XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+        if (rows.length < 2) {
+          alert("Arquivo sem dados suficientes.");
+          return;
+        }
+
+        // Normalização dos headers: UpperCase e Trim
+        const rawHeaders = rows[0].map(h => String(h || "").trim().toUpperCase());
+
+        // Mapeamento flexível com Aliases
+        const findHeaderIdx = (aliases: string[]) => rawHeaders.findIndex(h => aliases.includes(h));
+
+        const idxNome = findHeaderIdx(['NOME_COLABORADOR', 'NOME', 'COLABORADOR', 'NOME_COLAB', 'EMPLOYEE']);
+        const idxKpi = findHeaderIdx(['KPI_CODIGO', 'KPI', 'INDICADOR', 'CODIGO_KPI', 'CODIGO', 'KPI_CODE']);
+        const idxValor = findHeaderIdx(['VALOR_REALIZADO', 'VALOR', 'REALIZADO', 'ATINGIMENTO', 'VALOR_ATINGIDO', 'RESULTADO']);
+
+        // Validação com feedback detalhado (Debug)
+        if (idxNome === -1 || idxKpi === -1 || idxValor === -1) {
+          const expected = ["NOME_COLABORADOR", "KPI_CODIGO", "VALOR_REALIZADO"];
+          alert(`Erro de Colunas no Excel.\n\nEsperado: [${expected.join(", ")}]\n\nEncontrado no arquivo: [${rawHeaders.filter(h => h).join(", ")}]\n\nPor favor, verifique os nomes das colunas na primeira linha.`);
+          return;
+        }
 
         const newHistory = { ...history };
         const monthData = { ...(newHistory[currentMonth] || {}) };
         let count = 0;
 
-        rows.forEach((row: any) => {
-          const nomeExcel = String(row.NOME_COLABORADOR || '').toUpperCase().trim();
-          const codigoKpi = String(row.KPI_CODIGO || '').toUpperCase().trim();
-          const valorRealizado = parseFloat(row.VALOR_REALIZADO);
+        // Processa as linhas de dados (ignora o header)
+        rows.slice(1).forEach((row) => {
+          if (!row || row.length === 0) return;
+
+          const nomeExcel = String(row[idxNome] || '').toUpperCase().trim();
+          const codigoKpi = String(row[idxKpi] || '').toUpperCase().trim();
+          const valorRealizado = parseNum(row[idxValor]);
+
           if (!nomeExcel || !codigoKpi || isNaN(valorRealizado)) return;
+
           const emp = employees.find(e => e.name === nomeExcel);
           if (!emp) return;
+
           const kpiType = KPI_CODE_MAP[codigoKpi];
           if (!kpiType) return;
+
           if (!monthData[emp.id]) monthData[emp.id] = {};
           monthData[emp.id][kpiType] = valorRealizado;
           count++;
         });
 
         setHistory({ ...newHistory, [currentMonth]: monthData });
-        alert(`✅ Metas importadas! ${count} registros atualizados.`);
+        alert(`✅ Importação concluída!\n${count} metas foram atualizadas para o mês de ${monthOptions.find(o => o.val === currentMonth)?.label}.`);
         if (excelInputRef.current) excelInputRef.current.value = "";
       } catch (err) {
-        alert("Erro no Excel. Verifique as colunas obrigatórias.");
+        console.error("Erro no Excel:", err);
+        alert("Falha crítica ao ler o arquivo Excel. Verifique se o arquivo não está corrompido.");
       }
     };
     reader.readAsArrayBuffer(file);
@@ -383,7 +424,7 @@ const App: React.FC = () => {
         </section>
       </main>
 
-      {/* MODAL RELATÓRIO RH (MANTIDO E ADAPTADO) */}
+      {/* MODAL RELATÓRIO RH */}
       {showRHModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-gray-900/80 backdrop-blur-md animate-fade-in">
           <div className="bg-white rounded-[40px] w-full max-w-[95vw] max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
@@ -453,7 +494,7 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL ADICIONAR (MANTIDO) */}
+      {/* MODAL ADICIONAR */}
       {showAddModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm animate-fade-in">
           <div className="bg-white rounded-[40px] w-full max-w-md p-10 shadow-2xl">
