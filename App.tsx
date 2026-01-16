@@ -1,10 +1,12 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Employee, KPIType, CalculationResult, EmployeePerformance, EmployeeRole, MonthlyHistory } from './types';
+import { Employee, KPIType, CalculationResult, EmployeeRole, MonthlyHistory } from './types';
 import EmployeeCard from './components/EmployeeCard';
 import KPICalculator from './components/KPICalculator';
 import { KPI_LABELS } from './constants';
 import { getBonusPercentage, formatCurrency, calculateBonusValue } from './services/calculator';
+
+const DB_KEY = 'APP_PREMIACAO_V1';
 
 const KPI_CODE_MAP: Record<string, KPIType> = {
   'VENDAS_BSC': KPIType.MONTHLY_BSC,
@@ -14,25 +16,16 @@ const KPI_CODE_MAP: Record<string, KPIType> = {
 };
 
 const App: React.FC = () => {
+  // --- ESTADOS DA APLICAÇÃO ---
   const [currentMonth, setCurrentMonth] = useState(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
 
-  const [employees, setEmployees] = useState<Employee[]>(() => {
-    const saved = localStorage.getItem('kpi_employees');
-    return saved ? JSON.parse(saved) : [];
-  });
-  
-  const [history, setHistory] = useState<MonthlyHistory>(() => {
-    const saved = localStorage.getItem('kpi_history_v2');
-    return saved ? JSON.parse(saved) : {};
-  });
-
-  const [showSalaries, setShowSalaries] = useState(() => {
-    const saved = localStorage.getItem('kpi_show_salaries');
-    return saved !== null ? JSON.parse(saved) : true;
-  });
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [history, setHistory] = useState<MonthlyHistory>({});
+  const [showSalaries, setShowSalaries] = useState(true);
+  const [isLoaded, setIsLoaded] = useState(false);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -42,24 +35,79 @@ const App: React.FC = () => {
   
   const excelInputRef = useRef<HTMLInputElement>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
+  const backupInputRef = useRef<HTMLInputElement>(null);
 
   const currentMonthPerformance = useMemo(() => history[currentMonth] || {}, [history, currentMonth]);
 
+  // --- PERSISTÊNCIA (LOAD) ---
   useEffect(() => {
-    localStorage.setItem('kpi_employees', JSON.stringify(employees));
-    if (employees.length > 0 && !selectedId) {
-      setSelectedId(employees[0].id);
+    const savedData = localStorage.getItem(DB_KEY);
+    if (savedData) {
+      try {
+        const parsed = JSON.parse(savedData);
+        setEmployees(parsed.employees || []);
+        setHistory(parsed.history || {});
+        setShowSalaries(parsed.showSalaries ?? true);
+        if (parsed.currentMonth) setCurrentMonth(parsed.currentMonth);
+        if (parsed.employees?.length > 0) setSelectedId(parsed.employees[0].id);
+      } catch (e) {
+        console.error("Erro ao carregar banco de dados local", e);
+      }
     }
-  }, [employees, selectedId]);
+    setIsLoaded(true);
+  }, []);
 
+  // --- PERSISTÊNCIA (SAVE) ---
   useEffect(() => {
-    localStorage.setItem('kpi_history_v2', JSON.stringify(history));
-  }, [history]);
+    if (!isLoaded) return;
+    const stateToSave = {
+      employees,
+      history,
+      showSalaries,
+      currentMonth
+    };
+    localStorage.setItem(DB_KEY, JSON.stringify(stateToSave));
+  }, [employees, history, showSalaries, currentMonth, isLoaded]);
 
-  useEffect(() => {
-    localStorage.setItem('kpi_show_salaries', JSON.stringify(showSalaries));
-  }, [showSalaries]);
+  // --- FUNÇÕES DE BACKUP ---
+  const handleExportBackup = () => {
+    const stateToSave = { employees, history, showSalaries, timestamp: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(stateToSave, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Backup_Premiacao_KPI_${new Date().toISOString().split('T')[0]}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
+  const handleImportBackup = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const parsed = JSON.parse(event.target?.result as string);
+        if (parsed.employees && parsed.history) {
+          if (confirm("Isso irá substituir todos os dados atuais. Deseja continuar?")) {
+            setEmployees(parsed.employees);
+            setHistory(parsed.history);
+            if (parsed.employees.length > 0) setSelectedId(parsed.employees[0].id);
+            alert("✅ Backup restaurado com sucesso!");
+          }
+        } else {
+          alert("Arquivo de backup inválido.");
+        }
+      } catch (err) {
+        alert("Erro ao ler arquivo de backup.");
+      }
+    };
+    reader.readAsText(file);
+    if (backupInputRef.current) backupInputRef.current.value = "";
+  };
+
+  // --- LÓGICA DE NEGÓCIO ---
   const selectedEmployee = useMemo(() => {
     return employees.find(e => e.id === selectedId);
   }, [employees, selectedId]);
@@ -85,7 +133,6 @@ const App: React.FC = () => {
     }));
   };
 
-  // IMPORTAÇÃO DE CADASTRO E SALÁRIOS (CSV)
   const handleCSVImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -95,10 +142,8 @@ const App: React.FC = () => {
       const text = event.target?.result as string;
       const lines = text.split(/\r?\n/).filter(line => line.trim() !== "");
       if (lines.length < 2) return;
-
       const delimiter = lines[0].includes(';') ? ';' : ',';
       const headers = lines[0].split(delimiter).map(h => h.trim().toLowerCase());
-
       const idx = {
         name: headers.findIndex(h => h.includes('nome')),
         role: headers.findIndex(h => h.includes('perfil') || h.includes('cargo')),
@@ -106,37 +151,30 @@ const App: React.FC = () => {
       };
 
       const newEmployeesList = [...employees];
-
       for (let i = 1; i < lines.length; i++) {
         const parts = lines[i].split(delimiter).map(p => p.trim());
         if (parts.length < 2) continue;
-
         const name = idx.name !== -1 ? parts[idx.name].toUpperCase() : "";
         if (!name) continue;
-
         const roleStr = idx.role !== -1 ? parts[idx.role].toUpperCase() : "EQUIPE";
         const role = roleStr.includes("GERENTE") ? EmployeeRole.GERENTE : EmployeeRole.EQUIPE;
         const baseSalary = idx.salary !== -1 ? parseNum(parts[idx.salary]) : 0;
-
         let emp = newEmployeesList.find(e => e.name === name);
         if (!emp) {
           emp = { id: (Date.now() + i).toString(), name, baseSalary, role };
           newEmployeesList.push(emp);
         } else {
-          // ATUALIZA O SALÁRIO BASE SE O COLABORADOR JÁ EXISTIR
           emp.baseSalary = baseSalary;
           emp.role = role;
         }
       }
-
       setEmployees(newEmployeesList);
-      alert("✅ Cadastro e Salários atualizados com sucesso!");
+      alert("✅ Cadastro e Salários atualizados!");
       if (csvInputRef.current) csvInputRef.current.value = "";
     };
     reader.readAsText(file, 'ISO-8859-1');
   };
 
-  // IMPORTAÇÃO DE METAS/PERFORMANCE (EXCEL)
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -146,8 +184,7 @@ const App: React.FC = () => {
       try {
         const data = new Uint8Array(event.target?.result as ArrayBuffer);
         const workbook = (window as any).XLSX.read(data, { type: 'array' });
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
         const rows = (window as any).XLSX.utils.sheet_to_json(worksheet);
 
         const newHistory = { ...history };
@@ -158,15 +195,11 @@ const App: React.FC = () => {
           const nomeExcel = String(row.NOME_COLABORADOR || '').toUpperCase().trim();
           const codigoKpi = String(row.KPI_CODIGO || '').toUpperCase().trim();
           const valorRealizado = parseFloat(row.VALOR_REALIZADO);
-
           if (!nomeExcel || !codigoKpi || isNaN(valorRealizado)) return;
-
           const emp = employees.find(e => e.name === nomeExcel);
           if (!emp) return;
-
           const kpiType = KPI_CODE_MAP[codigoKpi];
           if (!kpiType) return;
-
           if (!monthData[emp.id]) monthData[emp.id] = {};
           monthData[emp.id][kpiType] = valorRealizado;
           count++;
@@ -176,7 +209,7 @@ const App: React.FC = () => {
         alert(`✅ Metas importadas! ${count} registros atualizados.`);
         if (excelInputRef.current) excelInputRef.current.value = "";
       } catch (err) {
-        alert("Erro no Excel. Verifique as colunas NOME_COLABORADOR, KPI_CODIGO e VALOR_REALIZADO.");
+        alert("Erro no Excel. Verifique as colunas obrigatórias.");
       }
     };
     reader.readAsArrayBuffer(file);
@@ -224,7 +257,7 @@ const App: React.FC = () => {
   const monthOptions = useMemo(() => {
     const options = [];
     const now = new Date();
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 24; i++) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const val = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
       const label = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
@@ -236,61 +269,82 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen pb-12 bg-[#f8fafc]">
       <header className="bg-white border-b border-gray-200 sticky top-0 z-50 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-4">
+        <div className="max-w-[1440px] mx-auto px-4 h-20 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4 flex-shrink-0">
             <div className="bg-blue-600 p-2.5 rounded-xl text-white">
-              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeWidth="2" />
               </svg>
             </div>
-            <div>
-              <h1 className="text-xl font-black text-gray-900 tracking-tight leading-none">Cálculo de Premiação</h1>
-              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">Dashboard V2.0</p>
+            <div className="hidden sm:block">
+              <h1 className="text-lg font-black text-gray-900 tracking-tight leading-none">KPI Manager</h1>
+              <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest mt-1">Enterprise Database</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowSalaries(!showSalaries)} className={`p-2.5 rounded-xl transition-all border ${showSalaries ? 'bg-gray-50 border-gray-100 text-gray-400' : 'bg-blue-50 border-blue-100 text-blue-600'}`}>
-              {showSalaries ? (
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-              ) : (
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18" /></svg>
-              )}
-            </button>
+          <div className="flex items-center gap-2 flex-grow justify-end overflow-x-auto pb-2 sm:pb-0 custom-scrollbar">
+            {/* GRUPO: SISTEMA / DATABASE */}
+            <div className="flex items-center bg-gray-50 p-1 rounded-xl border border-gray-100 gap-1">
+              <button onClick={handleExportBackup} className="p-2 text-gray-500 hover:text-blue-600 hover:bg-white rounded-lg transition-all" title="Baixar Backup JSON">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>
+              </button>
+              <label className="p-2 text-gray-500 hover:text-emerald-600 hover:bg-white rounded-lg transition-all cursor-pointer" title="Restaurar Backup JSON">
+                <input ref={backupInputRef} type="file" className="hidden" accept=".json" onChange={handleImportBackup} />
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1M16 16l-4-4m0 0l-4 4m4-4v12M12 4v1m0 0a1 1 0 100 2 1 1 0 000-2z" /></svg>
+              </label>
+              <div className="w-px h-4 bg-gray-200 mx-1"></div>
+              <button onClick={() => setShowSalaries(!showSalaries)} className={`p-2 rounded-lg transition-all ${showSalaries ? 'text-gray-400' : 'text-blue-600 bg-white shadow-sm'}`}>
+                {showSalaries ? (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                ) : (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18" /></svg>
+                )}
+              </button>
+            </div>
 
             <div className="h-8 w-px bg-gray-100 mx-1"></div>
 
-            <select value={currentMonth} onChange={(e) => setCurrentMonth(e.target.value)} className="bg-gray-50 text-gray-600 font-bold py-2.5 px-3 rounded-xl border border-gray-100 outline-none text-xs cursor-pointer">
-              {monthOptions.map(m => <option key={m.val} value={m.val}>{m.label}</option>)}
-            </select>
+            {/* SELETOR DE MÊS */}
+            <div className="flex flex-col min-w-[130px]">
+              <span className="text-[8px] font-black text-blue-600 uppercase mb-0.5 ml-1">Mês de Referência</span>
+              <select value={currentMonth} onChange={(e) => setCurrentMonth(e.target.value)} className="bg-white text-gray-700 font-bold py-1.5 px-3 rounded-xl border border-gray-200 outline-none text-[11px] cursor-pointer hover:border-blue-400 transition-colors">
+                {monthOptions.map(m => <option key={m.val} value={m.val}>{m.label}</option>)}
+              </select>
+            </div>
 
-            {/* BOTÃO 1: IMPORTAR CADASTRO (SALÁRIOS) */}
-            <label className="cursor-pointer px-4 py-2.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl text-[11px] font-black transition-all flex items-center gap-2 border border-blue-100">
+            <label className="cursor-pointer px-4 py-2.5 bg-white text-blue-600 hover:bg-blue-50 rounded-xl text-[11px] font-black transition-all flex items-center gap-2 border border-blue-100 whitespace-nowrap">
               <input ref={csvInputRef} type="file" className="hidden" accept=".csv" onChange={handleCSVImport} />
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" strokeWidth="2" /></svg>
-              Importar Cadastro (CSV)
+              Importar Cadastro
             </label>
 
-            {/* BOTÃO 2: IMPORTAR METAS (EXCEL) */}
-            <label className="cursor-pointer px-4 py-2.5 bg-emerald-600 text-white hover:bg-emerald-700 rounded-xl text-[11px] font-black transition-all flex items-center gap-2 shadow-lg shadow-emerald-50">
+            <label className="cursor-pointer px-4 py-2.5 bg-emerald-600 text-white hover:bg-emerald-700 rounded-xl text-[11px] font-black transition-all flex items-center gap-2 shadow-lg shadow-emerald-50 whitespace-nowrap">
               <input ref={excelInputRef} type="file" className="hidden" accept=".xlsx, .xls" onChange={handleExcelImport} />
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeWidth="2" /></svg>
-              Importar Metas (Excel)
+              Importar Metas
             </label>
 
-            <button onClick={() => setShowRHModal(true)} className="px-4 py-2.5 bg-gray-100 text-gray-600 hover:bg-gray-200 rounded-xl text-[11px] font-black transition-all">Relatório RH</button>
-            <button onClick={() => setShowAddModal(true)} className="px-4 py-2.5 bg-blue-600 text-white hover:bg-blue-700 rounded-xl text-[11px] font-black shadow-lg shadow-blue-50">Novo +</button>
+            <button onClick={() => setShowRHModal(true)} className="px-4 py-2.5 bg-gray-100 text-gray-600 hover:bg-gray-200 rounded-xl text-[11px] font-black transition-all whitespace-nowrap">Relatório RH</button>
+            <button onClick={() => setShowAddModal(true)} className="px-4 py-2.5 bg-blue-600 text-white hover:bg-blue-700 rounded-xl text-[11px] font-black shadow-lg shadow-blue-50 whitespace-nowrap">Novo +</button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 mt-8 grid grid-cols-1 lg:grid-cols-4 gap-8">
+      <main className="max-w-[1440px] mx-auto px-4 mt-8 grid grid-cols-1 lg:grid-cols-4 gap-8">
         <aside className="lg:col-span-1 space-y-4">
-          <h2 className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Equipe</h2>
+          <div className="flex justify-between items-center ml-1">
+            <h2 className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Colaboradores ({employees.length})</h2>
+          </div>
           <div className="max-h-[calc(100vh-180px)] overflow-y-auto pr-2 custom-scrollbar space-y-3">
-            {employees.map(emp => (
-              <EmployeeCard key={emp.id} employee={emp} isSelected={selectedId === emp.id} showSalary={showSalaries} onSelect={(e) => setSelectedId(e.id)} onDelete={(id) => { if(confirm("Remover colaborador?")) setEmployees(prev => prev.filter(e => e.id !== id)); }} />
-            ))}
+            {employees.length > 0 ? (
+              employees.map(emp => (
+                <EmployeeCard key={emp.id} employee={emp} isSelected={selectedId === emp.id} showSalary={showSalaries} onSelect={(e) => setSelectedId(e.id)} onDelete={(id) => { if(confirm("Remover colaborador e todo seu histórico?")) setEmployees(prev => prev.filter(e => e.id !== id)); }} />
+              ))
+            ) : (
+              <div className="p-8 text-center bg-white rounded-3xl border border-dashed border-gray-200">
+                 <p className="text-[10px] font-black text-gray-300 uppercase">Nenhum colaborador cadastrado</p>
+              </div>
+            )}
           </div>
         </aside>
 
@@ -306,28 +360,37 @@ const App: React.FC = () => {
                   <p className="text-gray-500 font-medium">Salário Base: <span className="text-gray-900 font-bold">{showSalaries ? formatCurrency(selectedEmployee.baseSalary) : '••••••'}</span></p>
                 </div>
                 <div className="bg-blue-600 p-6 rounded-2xl text-white shadow-2xl shadow-blue-100 min-w-[280px] text-center">
-                  <p className="text-[10px] font-black uppercase tracking-widest opacity-70 mb-1">Premiação Total Acumulada</p>
+                  <p className="text-[10px] font-black uppercase tracking-widest opacity-70 mb-1">Premiação Total - {monthOptions.find(o => o.val === currentMonth)?.label}</p>
                   <p className="text-4xl font-black">{formatCurrency(totalBonusForSelected)}</p>
                 </div>
               </div>
-              <KPICalculator employee={selectedEmployee} performance={currentMonthPerformance[selectedId || ''] || {}} onPerformanceChange={handlePerformanceChange} onCalculatedResults={setCurrentSelectedResults} />
+              <KPICalculator 
+                employee={selectedEmployee} 
+                performance={currentMonthPerformance[selectedId || ''] || {}} 
+                onPerformanceChange={handlePerformanceChange} 
+                onCalculatedResults={setCurrentSelectedResults} 
+              />
             </div>
           ) : (
             <div className="h-[500px] flex flex-col items-center justify-center border-4 border-dashed border-gray-100 rounded-[48px] bg-white/50 p-12 text-center">
-              <h2 className="text-2xl font-black text-gray-900 mb-2 uppercase tracking-tight">Selecione um colaborador</h2>
-              <p className="text-gray-500 max-w-sm font-medium">Use os botões acima para importar o cadastro de salários (CSV) ou as metas do mês (Excel).</p>
+              <div className="bg-gray-100 p-6 rounded-full mb-6">
+                <svg className="w-12 h-12 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" strokeWidth="1" /></svg>
+              </div>
+              <h2 className="text-2xl font-black text-gray-900 mb-2 uppercase tracking-tight">Pronto para começar?</h2>
+              <p className="text-gray-500 max-w-sm font-medium">Selecione um colaborador da lista lateral ou importe os dados do RH para começar a calcular as metas de <strong>{monthOptions.find(o => o.val === currentMonth)?.label}</strong>.</p>
             </div>
           )}
         </section>
       </main>
 
+      {/* MODAL RELATÓRIO RH (MANTIDO E ADAPTADO) */}
       {showRHModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-gray-900/80 backdrop-blur-md animate-fade-in">
           <div className="bg-white rounded-[40px] w-full max-w-[95vw] max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
             <div className="p-10 border-b flex justify-between items-center bg-white sticky top-0 z-10">
               <div>
-                <h2 className="text-2xl font-black text-gray-900 uppercase">Resumo Detalhado da Folha</h2>
-                <p className="text-xs text-gray-400 font-bold uppercase tracking-widest mt-1">Fechamento: {currentMonth}</p>
+                <h2 className="text-2xl font-black text-gray-900 uppercase">Resumo da Folha - {monthOptions.find(o => o.val === currentMonth)?.label}</h2>
+                <p className="text-xs text-gray-400 font-bold uppercase tracking-widest mt-1">Dados Consolidados</p>
               </div>
               <div className="flex gap-3">
                 <button onClick={exportToCSV} className="bg-emerald-600 text-white px-6 py-3 rounded-2xl text-sm font-black shadow-lg shadow-emerald-50 flex items-center gap-2">
@@ -390,6 +453,7 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* MODAL ADICIONAR (MANTIDO) */}
       {showAddModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm animate-fade-in">
           <div className="bg-white rounded-[40px] w-full max-w-md p-10 shadow-2xl">
