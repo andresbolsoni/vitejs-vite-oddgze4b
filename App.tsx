@@ -183,40 +183,52 @@ const App: React.FC = () => {
     reader.readAsText(file, 'ISO-8859-1');
   };
 
-  // --- IMPORTAÇÃO ROBUSTA DE EXCEL ---
+  // --- IMPORTAÇÃO DE EXCEL (Refatorada para máxima robustez) ---
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
+    
     reader.onload = (event) => {
       try {
-        const data = new Uint8Array(event.target?.result as ArrayBuffer);
-        const workbook = (window as any).XLSX.read(data, { type: 'array' });
-        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-        
-        // Lê como array de arrays para controle total dos headers
-        const rows: any[][] = (window as any).XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        const arrayBuffer = event.target?.result;
+        if (!arrayBuffer) throw new Error("Não foi possível ler o buffer do arquivo.");
 
-        if (rows.length < 2) {
-          alert("Arquivo sem dados suficientes.");
-          return;
+        // Importante: Usar Uint8Array para leitura binária segura de .xlsx
+        const data = new Uint8Array(arrayBuffer as ArrayBuffer);
+        const workbook = (window as any).XLSX.read(data, { type: 'array' });
+        
+        if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+          throw new Error("O arquivo Excel parece estar vazio ou não contém planilhas.");
         }
 
-        // Normalização dos headers: UpperCase e Trim
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        
+        // Lê como matriz de dados bruta (header: 1) para termos controle total
+        const rows: any[][] = (window as any).XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+        if (!rows || rows.length < 2) {
+          throw new Error("Arquivo sem dados suficientes. Certifique-se de que a primeira linha contém os cabeçalhos.");
+        }
+
+        // Normalização de headers: Tudo para MAIÚSCULO e sem espaços
         const rawHeaders = rows[0].map(h => String(h || "").trim().toUpperCase());
 
-        // Mapeamento flexível com Aliases
+        // Função auxiliar para busca flexível de colunas (Aliases)
         const findHeaderIdx = (aliases: string[]) => rawHeaders.findIndex(h => aliases.includes(h));
 
-        const idxNome = findHeaderIdx(['NOME_COLABORADOR', 'NOME', 'COLABORADOR', 'NOME_COLAB', 'EMPLOYEE']);
-        const idxKpi = findHeaderIdx(['KPI_CODIGO', 'KPI', 'INDICADOR', 'CODIGO_KPI', 'CODIGO', 'KPI_CODE']);
-        const idxValor = findHeaderIdx(['VALOR_REALIZADO', 'VALOR', 'REALIZADO', 'ATINGIMENTO', 'VALOR_ATINGIDO', 'RESULTADO']);
+        const idxNome = findHeaderIdx(['NOME_COLABORADOR', 'NOME', 'COLABORADOR', 'NOME_COLAB', 'EMPLOYEE', 'FUNCIONÁRIO', 'FUNCIONARIO']);
+        const idxKpi = findHeaderIdx(['KPI_CODIGO', 'KPI', 'INDICADOR', 'CODIGO_KPI', 'CODIGO', 'KPI_CODE', 'KEY_PERFORMANCE']);
+        const idxValor = findHeaderIdx(['VALOR_REALIZADO', 'VALOR', 'REALIZADO', 'ATINGIMENTO', 'VALOR_ATINGIDO', 'RESULTADO', 'PERCENTUAL']);
 
-        // Validação com feedback detalhado (Debug)
+        // Validação de colunas com feedback de debug
         if (idxNome === -1 || idxKpi === -1 || idxValor === -1) {
           const expected = ["NOME_COLABORADOR", "KPI_CODIGO", "VALOR_REALIZADO"];
-          alert(`Erro de Colunas no Excel.\n\nEsperado: [${expected.join(", ")}]\n\nEncontrado no arquivo: [${rawHeaders.filter(h => h).join(", ")}]\n\nPor favor, verifique os nomes das colunas na primeira linha.`);
+          const found = rawHeaders.filter(h => h !== "").join(", ");
+          
+          alert(`ERRO DE COLUNAS DETECTADO\n\nEsperado: [${expected.join(", ")}]\n\nEncontrado no Arquivo: [${found || "Células vazias"}]\n\nPor favor, ajuste a primeira linha da sua planilha.`);
           return;
         }
 
@@ -224,21 +236,21 @@ const App: React.FC = () => {
         const monthData = { ...(newHistory[currentMonth] || {}) };
         let count = 0;
 
-        // Processa as linhas de dados (ignora o header)
-        rows.slice(1).forEach((row) => {
+        // Itera sobre as linhas de dados (pulando o header)
+        rows.slice(1).forEach((row, rowIndex) => {
           if (!row || row.length === 0) return;
 
           const nomeExcel = String(row[idxNome] || '').toUpperCase().trim();
           const codigoKpi = String(row[idxKpi] || '').toUpperCase().trim();
           const valorRealizado = parseNum(row[idxValor]);
 
-          if (!nomeExcel || !codigoKpi || isNaN(valorRealizado)) return;
+          if (!nomeExcel || !codigoKpi) return;
 
           const emp = employees.find(e => e.name === nomeExcel);
-          if (!emp) return;
+          if (!emp) return; // Ignora se o colaborador não estiver no cadastro
 
           const kpiType = KPI_CODE_MAP[codigoKpi];
-          if (!kpiType) return;
+          if (!kpiType) return; // Ignora se o código do KPI for inválido
 
           if (!monthData[emp.id]) monthData[emp.id] = {};
           monthData[emp.id][kpiType] = valorRealizado;
@@ -246,13 +258,22 @@ const App: React.FC = () => {
         });
 
         setHistory({ ...newHistory, [currentMonth]: monthData });
-        alert(`✅ Importação concluída!\n${count} metas foram atualizadas para o mês de ${monthOptions.find(o => o.val === currentMonth)?.label}.`);
+        
+        alert(`✅ Sucesso na Importação!\n\nAtualizados: ${count} registros.\nMês de Referência: ${monthOptions.find(o => o.val === currentMonth)?.label}.`);
+        
         if (excelInputRef.current) excelInputRef.current.value = "";
-      } catch (err) {
-        console.error("Erro no Excel:", err);
-        alert("Falha crítica ao ler o arquivo Excel. Verifique se o arquivo não está corrompido.");
+        
+      } catch (err: any) {
+        console.error("Erro técnico na leitura do Excel:", err);
+        alert(`FALHA CRÍTICA NO EXCEL\n\nMotivo: ${err.message}\n\nTechnical Error: ${err.stack?.split('\n')[0] || "N/A"}\n\nVerifique se o arquivo não está aberto em outro programa.`);
       }
     };
+
+    reader.onerror = () => {
+      alert("Erro de leitura do navegador: Não foi possível acessar o arquivo físico.");
+    };
+
+    // CRÍTICO: Usar readAsArrayBuffer para .xlsx para evitar corrupção de dados binários
     reader.readAsArrayBuffer(file);
   };
 
@@ -324,7 +345,6 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 flex-grow justify-end overflow-x-auto pb-2 sm:pb-0 custom-scrollbar">
-            {/* GRUPO: SISTEMA / DATABASE */}
             <div className="flex items-center bg-gray-50 p-1 rounded-xl border border-gray-100 gap-1">
               <button onClick={handleExportBackup} className="p-2 text-gray-500 hover:text-blue-600 hover:bg-white rounded-lg transition-all" title="Baixar Backup JSON">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>
@@ -345,7 +365,6 @@ const App: React.FC = () => {
 
             <div className="h-8 w-px bg-gray-100 mx-1"></div>
 
-            {/* SELETOR DE MÊS */}
             <div className="flex flex-col min-w-[130px]">
               <span className="text-[8px] font-black text-blue-600 uppercase mb-0.5 ml-1">Mês de Referência</span>
               <select value={currentMonth} onChange={(e) => setCurrentMonth(e.target.value)} className="bg-white text-gray-700 font-bold py-1.5 px-3 rounded-xl border border-gray-200 outline-none text-[11px] cursor-pointer hover:border-blue-400 transition-colors">
@@ -424,7 +443,6 @@ const App: React.FC = () => {
         </section>
       </main>
 
-      {/* MODAL RELATÓRIO RH */}
       {showRHModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-gray-900/80 backdrop-blur-md animate-fade-in">
           <div className="bg-white rounded-[40px] w-full max-w-[95vw] max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
@@ -494,7 +512,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL ADICIONAR */}
       {showAddModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm animate-fade-in">
           <div className="bg-white rounded-[40px] w-full max-w-md p-10 shadow-2xl">
